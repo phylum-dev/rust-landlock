@@ -28,11 +28,11 @@ pub use self::landlock::{
 
 use libc::{__u32, c_int, c_void, size_t, syscall};
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const __NR_LANDLOCK_CREATE_RULESET: u32 = 444;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const __NR_LANDLOCK_ADD_RULE: u32 = 445;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const __NR_LANDLOCK_RESTRICT_SELF: u32 = 446;
 
 #[rustfmt::skip]
