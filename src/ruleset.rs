@@ -14,10 +14,19 @@ use crate::*;
 
 pub trait Access: PrivateAccess {
     /// Gets the access rights defined by a specific [`ABI`].
-    fn from_all(abi: ABI) -> BitFlags<Self>;
+    /// Union of [`from_read()`](Access::from_read) and [`from_write()`](Access::from_write).
+    fn from_all(abi: ABI) -> BitFlags<Self> {
+        // An empty access-right would be an error if passed to the kernel, but because the kernel
+        // doesn't support Landlock, no Landlock syscall should be called.  try_compat() should
+        // also return RestrictionStatus::Unrestricted when called with unsupported/empty
+        // access-righs.
+        Self::from_read(abi) | Self::from_write(abi)
+    }
+
     /// Gets the access rights identified as read-only according to a specific ABI.
     /// Exclusive with [`from_write()`](Access::from_write).
     fn from_read(abi: ABI) -> BitFlags<Self>;
+
     /// Gets the access rights identified as write-only according to a specific ABI.
     /// Exclusive with [`from_read()`](Access::from_read).
     fn from_write(abi: ABI) -> BitFlags<Self>;
@@ -138,9 +147,11 @@ fn support_no_new_privs() -> bool {
 ///     let abi = ABI::V1;
 ///     let access_all = AccessFs::from_all(abi);
 ///     let access_read = AccessFs::from_read(abi);
-///     let mut ruleset = Ruleset::new().handle_access(access_all)?.create()?;
-///     ruleset.add_rule(PathBeneath::new(hierarchy, access_read))?;
-///     Ok(ruleset.restrict_self()?)
+///     Ok(Ruleset::new()
+///         .handle_access(access_all)?
+///         .create()?
+///         .add_rule(PathBeneath::new(hierarchy, access_read))?
+///         .restrict_self()?)
 /// }
 ///
 /// let fd = PathFd::new("/home").expect("failed to open /home");
@@ -173,15 +184,17 @@ fn support_no_new_privs() -> bool {
 ///     let abi = ABI::V1;
 ///     let access_all = AccessFs::from_all(abi);
 ///     let access_read = AccessFs::from_read(abi);
-///     let mut ruleset = Ruleset::new().handle_access(access_all)?.create()?;
-///     ruleset.add_rules(
-///         hierarchies
-///             .iter()
-///             .map::<Result<_, MyRestrictError>, _>(|p| {
-///                 Ok(PathBeneath::new(PathFd::new(p)?, access_read))
-///             }),
-///     )?;
-///     Ok(ruleset.restrict_self()?)
+///     Ok(Ruleset::new()
+///         .handle_access(access_all)?
+///         .create()?
+///         .add_rules(
+///             hierarchies
+///                 .iter()
+///                 .map::<Result<_, MyRestrictError>, _>(|p| {
+///                     Ok(PathBeneath::new(PathFd::new(p)?, access_read))
+///                 }),
+///         )?
+///         .restrict_self()?)
 /// }
 ///
 /// let status = restrict_paths(&["/usr", "/home"]).expect("failed to build the ruleset");
@@ -282,14 +295,12 @@ impl Ruleset {
                     assert_eq!(self.compat.state, CompatState::Final);
                     Ok(RulesetCreated::new(self, -1))
                 }
-                ABI::V1 | ABI::V2 => {
-                    match unsafe { uapi::landlock_create_ruleset(&attr, size_of_val(&attr), 0) } {
-                        fd if fd >= 0 => Ok(RulesetCreated::new(self, fd)),
-                        _ => Err(CreateRulesetError::CreateRulesetCall {
-                            source: Error::last_os_error(),
-                        }),
-                    }
-                }
+                _ => match unsafe { uapi::landlock_create_ruleset(&attr, size_of_val(&attr), 0) } {
+                    fd if fd >= 0 => Ok(RulesetCreated::new(self, fd)),
+                    _ => Err(CreateRulesetError::CreateRulesetCall {
+                        source: Error::last_os_error(),
+                    }),
+                },
             }
         };
         Ok(body()?)
@@ -351,46 +362,39 @@ impl RulesetCreated {
     /// Attempts to add a new rule to the ruleset.
     ///
     /// On error, returns a wrapped [`AddRulesError`].
-    pub fn add_rule<T, U>(&mut self, rule: T) -> Result<&mut Self, RulesetError>
+    pub fn add_rule<T, U>(mut self, rule: T) -> Result<Self, RulesetError>
     where
         T: Rule<U>,
         U: Access,
     {
-        rule.check_consistency(self)?;
-
-        let compat_rule = rule
-            .try_compat(&mut self.compat)
-            .map_err(AddRuleError::Compat)
-            .map_err(AddRulesError::from)?;
-
-        match self.compat.abi {
-            ABI::Unsupported => {
-                #[cfg(test)]
-                assert_eq!(self.compat.state, CompatState::Final);
-
-                // TODO: Shouldn't this return an error?
-            }
-            ABI::V1 | ABI::V2 => {
-                let status = unsafe {
+        let body = || -> Result<Self, AddRulesError> {
+            rule.check_consistency(&self)?;
+            let compat_rule = rule
+                .try_compat(&mut self.compat)
+                .map_err(AddRuleError::Compat)?;
+            match self.compat.abi {
+                ABI::Unsupported => {
+                    #[cfg(test)]
+                    assert_eq!(self.compat.state, CompatState::Final);
+                    Ok(self)
+                }
+                _ => match unsafe {
                     uapi::landlock_add_rule(
                         self.fd,
                         compat_rule.get_type_id(),
                         compat_rule.as_ptr(),
                         compat_rule.get_flags(),
                     )
-                };
-
-                if status != 0 {
-                    let add_rule_error = AddRuleError::<U>::AddRuleCall {
+                } {
+                    0 => Ok(self),
+                    _ => Err(AddRuleError::<U>::AddRuleCall {
                         source: Error::last_os_error(),
-                    };
-                    let add_rules_error = AddRulesError::from(add_rule_error);
-                    return Err(add_rules_error.into());
-                }
+                    }
+                    .into()),
+                },
             }
         };
-
-        Ok(self)
+        Ok(body()?)
     }
 
     /// Attempts to add a set of new rules to the ruleset.
@@ -459,13 +463,15 @@ impl RulesetCreated {
     /// }
     ///
     /// fn restrict_env() -> Result<RestrictionStatus, PathEnvError<'static>> {
-    ///     let mut ruleset = Ruleset::new().handle_access(AccessFs::from_all(ABI::V1))?.create()?;
-    ///     // In the shell: export EXECUTABLE_PATH="/usr:/bin:/sbin"
-    ///     ruleset.add_rules(PathEnv::new("EXECUTABLE_PATH", AccessFs::Execute.into())?.iter())?;
-    ///     Ok(ruleset.restrict_self()?)
+    ///     Ok(Ruleset::new()
+    ///         .handle_access(AccessFs::from_all(ABI::V1))?
+    ///         .create()?
+    ///         // In the shell: export EXECUTABLE_PATH="/usr:/bin:/sbin"
+    ///         .add_rules(PathEnv::new("EXECUTABLE_PATH", AccessFs::Execute.into())?.iter())?
+    ///         .restrict_self()?)
     /// }
     /// ```
-    pub fn add_rules<I, T, U, E>(&mut self, rules: I) -> Result<&mut Self, E>
+    pub fn add_rules<I, T, U, E>(mut self, rules: I) -> Result<Self, E>
     where
         I: IntoIterator<Item = Result<T, E>>,
         T: Rule<U>,
@@ -474,14 +480,14 @@ impl RulesetCreated {
         E: From<RulesetError>,
     {
         for rule in rules {
-            self.add_rule(rule?)?;
+            self = self.add_rule(rule?)?;
         }
         Ok(self)
     }
 
     /// Configures the ruleset to call `prctl(2)` with the `PR_SET_NO_NEW_PRIVS` command
     /// in [`restrict_self()`](RulesetCreated::restrict_self).
-    pub fn set_no_new_privs(&mut self, no_new_privs: bool) -> &mut Self {
+    pub fn set_no_new_privs(mut self, no_new_privs: bool) -> Self {
         self.no_new_privs = no_new_privs;
         self
     }
@@ -534,7 +540,7 @@ impl RulesetCreated {
                         no_new_privs: enforced_nnp,
                     })
                 }
-                ABI::V1 | ABI::V2 => match unsafe { uapi::landlock_restrict_self(self.fd, 0) } {
+                _ => match unsafe { uapi::landlock_restrict_self(self.fd, 0) } {
                     0 => {
                         self.compat.state.update(CompatState::Full);
                         Ok(RestrictionStatus {
@@ -584,14 +590,15 @@ fn ruleset_unsupported() {
         }
     );
 
-    let mut ruleset = Ruleset::from(ABI::Unsupported)
-        .handle_access(AccessFs::Execute)
-        .unwrap()
-        .create()
-        .unwrap();
-    ruleset.set_no_new_privs(false);
     assert_eq!(
-        ruleset.restrict_self().unwrap(),
+        Ruleset::from(ABI::Unsupported)
+            .handle_access(AccessFs::Execute)
+            .unwrap()
+            .create()
+            .unwrap()
+            .set_no_new_privs(false)
+            .restrict_self()
+            .unwrap(),
         RestrictionStatus {
             ruleset: RulesetStatus::NotEnforced,
             no_new_privs: false,
@@ -636,7 +643,7 @@ fn ruleset_unsupported() {
             .unwrap();
         // Fakes a call to create() to test without involving the kernel (i.e. no
         // landlock_ruleset_create() call).
-        let mut ruleset_created = RulesetCreated::new(ruleset, -1);
+        let ruleset_created = RulesetCreated::new(ruleset, -1);
         assert!(matches!(
             ruleset_created
                 .add_rule(PathBeneath::new(
@@ -647,23 +654,4 @@ fn ruleset_unsupported() {
             RulesetError::AddRules(AddRulesError::Fs(AddRuleError::UnhandledAccess { .. }))
         ));
     }
-}
-
-#[test]
-#[cfg(all(test, not(feature = "test-without-kernel-support")))]
-fn ruleset_enforced() {
-    // Restricting without rule exceptions is legitimate to forbid a set of actions.
-    assert_eq!(
-        Ruleset::from(ABI::V1)
-            .handle_access(AccessFs::Execute)
-            .unwrap()
-            .create()
-            .unwrap()
-            .restrict_self()
-            .unwrap(),
-        RestrictionStatus {
-            ruleset: RulesetStatus::FullyEnforced,
-            no_new_privs: true,
-        }
-    );
 }

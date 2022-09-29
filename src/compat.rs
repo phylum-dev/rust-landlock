@@ -2,6 +2,12 @@ use crate::{uapi, Access, AccessError, BitFlags, CompatError};
 
 #[cfg(test)]
 use crate::{make_bitflags, AccessFs};
+#[cfg(test)]
+use std::convert::TryInto;
+#[cfg(test)]
+use strum::{EnumCount, IntoEnumIterator};
+#[cfg(test)]
+use strum_macros::{EnumCount as EnumCountMacro, EnumIter};
 
 /// Version of the Landlock [ABI](https://en.wikipedia.org/wiki/Application_binary_interface).
 ///
@@ -20,7 +26,10 @@ use crate::{make_bitflags, AccessFs};
 ///
 /// Such `ABI` is also convenient to get the features supported by a specific Linux kernel
 /// without relying on the kernel version (which may not be accessible or patched).
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[cfg_attr(
+    test,
+    derive(Debug, PartialEq, Eq, PartialOrd, EnumIter, EnumCountMacro)
+)]
 #[derive(Copy, Clone)]
 #[non_exhaustive]
 pub enum ABI {
@@ -30,7 +39,8 @@ pub enum ABI {
     /// First Landlock ABI,
     /// introduced with [Linux 5.13](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=62fb9874f5da54fdb243003b386128037319b219).
     V1 = 1,
-    /// Second Landlock ABI, adds support for LANDLOCK_ACCESS_FS_REFER
+    /// Second Landlock ABI,
+    /// introduced with [Linux 5.19](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=3d7cb6b04c3f3115719235cc6866b10326de34cd).
     V2 = 2,
 }
 
@@ -56,23 +66,84 @@ impl ABI {
             // all kind of errors as unsupported.
             n if n <= 0 => ABI::Unsupported,
             1 => ABI::V1,
-            2 => ABI::V2,
             // Returns the greatest known ABI.
             _ => ABI::V2,
         }
+    }
+
+    #[cfg(test)]
+    fn is_known(value: i32) -> bool {
+        value > 0 && value < ABI::COUNT as i32
     }
 }
 
 #[test]
 fn abi_from() {
     // EOPNOTSUPP (-95), ENOSYS (-38)
-    for n in &[-95, -38, -1, 0] {
-        assert_eq!(ABI::from(*n), ABI::Unsupported);
+    for n in [-95, -38, -1, 0] {
+        assert_eq!(ABI::from(n), ABI::Unsupported);
     }
 
-    assert_eq!(ABI::from(1), ABI::V1);
-    assert_eq!(ABI::from(2), ABI::V2);
-    assert_eq!(ABI::from(9), ABI::V2);
+    let mut last_i = 1;
+    let mut last_abi = ABI::Unsupported;
+    for (i, abi) in ABI::iter().enumerate() {
+        last_i = i.try_into().unwrap();
+        last_abi = abi;
+        assert_eq!(ABI::from(last_i), last_abi);
+    }
+
+    assert_eq!(ABI::from(last_i + 1), last_abi);
+    assert_eq!(ABI::from(9), last_abi);
+}
+
+#[test]
+fn known_abi() {
+    assert!(!ABI::is_known(-1));
+    assert!(!ABI::is_known(0));
+    assert!(!ABI::is_known(99));
+
+    let mut last_i = -1;
+    for (i, _) in ABI::iter().enumerate().skip(1) {
+        last_i = i as i32;
+        assert!(ABI::is_known(last_i));
+    }
+    assert!(!ABI::is_known(last_i + 1));
+}
+
+#[cfg(test)]
+lazy_static! {
+    static ref TEST_ABI: ABI = match std::env::var("LANDLOCK_CRATE_TEST_ABI") {
+        Ok(s) => {
+            let n = s.parse::<i32>().unwrap();
+            if ABI::is_known(n) || n == 0 {
+                ABI::from(n)
+            } else {
+                panic!("Unknown ABI: {}", n);
+            }
+        }
+        Err(std::env::VarError::NotPresent) => ABI::iter().last().unwrap(),
+        Err(e) => panic!("Failed to read LANDLOCK_CRATE_TEST_ABI: {}", e),
+    };
+}
+
+#[cfg(test)]
+pub fn can_emulate(mock: ABI, full_support: ABI) -> bool {
+    mock <= *TEST_ABI || full_support <= *TEST_ABI
+}
+
+#[cfg(test)]
+pub fn landlock_is_enabled() -> bool {
+    *TEST_ABI != ABI::Unsupported
+}
+
+#[test]
+fn current_kernel_abi() {
+    // Ensures that the tested Landlock ABI is the latest known version supported by the running
+    // kernel.  If this test failed, you need set the LANDLOCK_CRATE_TEST_ABI environment variable
+    // to the Landlock ABI version supported by your kernel.  With a missing variable, the latest
+    // Landlock ABI version known by this crate is automatically set.
+    // From Linux 5.13 to 5.18, you need to run: LANDLOCK_CRATE_TEST_ABI=1 cargo test
+    assert_eq!(*TEST_ABI, ABI::new_current());
 }
 
 /// Returned by ruleset builder.

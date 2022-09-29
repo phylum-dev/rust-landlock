@@ -94,13 +94,14 @@ fn main() -> Result<(), anyhow::Error> {
         anyhow!("Missing command")
     })?;
 
-    let abi = ABI::V1;
-    let mut ruleset = Ruleset::new()
+    let abi = ABI::V2;
+    let status = Ruleset::new()
         .handle_access(AccessFs::from_all(abi))?
-        .create()?;
-    ruleset.add_rules(PathEnv::new(ENV_FS_RO_NAME, AccessFs::from_read(abi))?.iter())?;
-    ruleset.add_rules(PathEnv::new(ENV_FS_RW_NAME, AccessFs::from_all(abi))?.iter())?;
-    let status = ruleset.restrict_self().expect("Failed to enforce ruleset");
+        .create()?
+        .add_rules(PathEnv::new(ENV_FS_RO_NAME, AccessFs::from_read(abi))?.iter())?
+        .add_rules(PathEnv::new(ENV_FS_RW_NAME, AccessFs::from_all(abi))?.iter())?
+        .restrict_self()
+        .expect("Failed to enforce ruleset");
 
     if status.ruleset == RulesetStatus::NotEnforced {
         bail!("Landlock is not supported by the running kernel.");
