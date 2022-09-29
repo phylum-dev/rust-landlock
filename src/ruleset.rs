@@ -282,7 +282,7 @@ impl Ruleset {
                     assert_eq!(self.compat.state, CompatState::Final);
                     Ok(RulesetCreated::new(self, -1))
                 }
-                ABI::V1 => {
+                ABI::V1 | ABI::V2 => {
                     match unsafe { uapi::landlock_create_ruleset(&attr, size_of_val(&attr), 0) } {
                         fd if fd >= 0 => Ok(RulesetCreated::new(self, fd)),
                         _ => Err(CreateRulesetError::CreateRulesetCall {
@@ -356,7 +356,7 @@ impl RulesetCreated {
         T: Rule<U>,
         U: Access,
     {
-        rule.check_consistency(&self)?;
+        rule.check_consistency(self)?;
 
         let compat_rule = rule
             .try_compat(&mut self.compat)
@@ -370,7 +370,7 @@ impl RulesetCreated {
 
                 // TODO: Shouldn't this return an error?
             }
-            ABI::V1 => {
+            ABI::V1 | ABI::V2 => {
                 let status = unsafe {
                     uapi::landlock_add_rule(
                         self.fd,
@@ -534,7 +534,7 @@ impl RulesetCreated {
                         no_new_privs: enforced_nnp,
                     })
                 }
-                ABI::V1 => match unsafe { uapi::landlock_restrict_self(self.fd, 0) } {
+                ABI::V1 | ABI::V2 => match unsafe { uapi::landlock_restrict_self(self.fd, 0) } {
                     0 => {
                         self.compat.state.update(CompatState::Full);
                         Ok(RestrictionStatus {

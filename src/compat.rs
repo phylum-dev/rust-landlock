@@ -30,6 +30,8 @@ pub enum ABI {
     /// First Landlock ABI,
     /// introduced with [Linux 5.13](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=62fb9874f5da54fdb243003b386128037319b219).
     V1 = 1,
+    /// Second Landlock ABI, adds support for LANDLOCK_ACCESS_FS_REFER
+    V2 = 2,
 }
 
 impl ABI {
@@ -54,8 +56,9 @@ impl ABI {
             // all kind of errors as unsupported.
             n if n <= 0 => ABI::Unsupported,
             1 => ABI::V1,
+            2 => ABI::V2,
             // Returns the greatest known ABI.
-            _ => ABI::V1,
+            _ => ABI::V2,
         }
     }
 }
@@ -68,8 +71,8 @@ fn abi_from() {
     }
 
     assert_eq!(ABI::from(1), ABI::V1);
-    assert_eq!(ABI::from(2), ABI::V1);
-    assert_eq!(ABI::from(9), ABI::V1);
+    assert_eq!(ABI::from(2), ABI::V2);
+    assert_eq!(ABI::from(9), ABI::V2);
 }
 
 /// Returned by ruleset builder.

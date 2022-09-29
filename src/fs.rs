@@ -71,6 +71,8 @@ pub enum AccessFs {
     MakeBlock = uapi::LANDLOCK_ACCESS_FS_MAKE_BLOCK as u64,
     /// Create (or rename or link) a symbolic link.
     MakeSym = uapi::LANDLOCK_ACCESS_FS_MAKE_SYM as u64,
+    /// Link or rename a file from or to a different directory (i.e. reparent a file hierarchy).
+    Refer = uapi::LANDLOCK_ACCESS_FS_REFER as u64,
 }
 
 impl Access for AccessFs {
@@ -96,6 +98,22 @@ impl Access for AccessFs {
                 | MakeBlock
                 | MakeSym
             }),
+            ABI::V2 => make_bitflags!(AccessFs::{
+                Execute
+                | WriteFile
+                | ReadFile
+                | ReadDir
+                | RemoveDir
+                | RemoveFile
+                | MakeChar
+                | MakeDir
+                | MakeReg
+                | MakeSock
+                | MakeFifo
+                | MakeBlock
+                | MakeSym
+                | Refer
+            }),
         }
     }
 
@@ -103,7 +121,7 @@ impl Access for AccessFs {
     fn from_read(abi: ABI) -> BitFlags<Self> {
         match abi {
             ABI::Unsupported => BitFlags::EMPTY,
-            ABI::V1 => make_bitflags!(AccessFs::{
+            ABI::V1 | ABI::V2 => make_bitflags!(AccessFs::{
                 Execute
                 | ReadFile
                 | ReadDir
@@ -127,13 +145,26 @@ impl Access for AccessFs {
                 | MakeBlock
                 | MakeSym
             }),
+            ABI::V2 => make_bitflags!(AccessFs::{
+                WriteFile
+                | RemoveDir
+                | RemoveFile
+                | MakeChar
+                | MakeDir
+                | MakeReg
+                | MakeSock
+                | MakeFifo
+                | MakeBlock
+                | MakeSym
+                | Refer
+            }),
         }
     }
 }
 
 #[test]
 fn consistent_access_fs_rw() {
-    let abi = ABI::V1;
+    let abi = ABI::V2;
     assert_eq!(AccessFs::from_read(abi), !AccessFs::from_write(abi));
     assert_eq!(
         AccessFs::from_read(abi) | AccessFs::from_write(abi),

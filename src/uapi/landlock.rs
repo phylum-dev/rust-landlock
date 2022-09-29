@@ -16,6 +16,7 @@ pub const LANDLOCK_ACCESS_FS_MAKE_SOCK: u32 = 512;
 pub const LANDLOCK_ACCESS_FS_MAKE_FIFO: u32 = 1024;
 pub const LANDLOCK_ACCESS_FS_MAKE_BLOCK: u32 = 2048;
 pub const LANDLOCK_ACCESS_FS_MAKE_SYM: u32 = 4096;
+pub const LANDLOCK_ACCESS_FS_REFER: u32 = 8192;
 pub type __s8 = ::std::os::raw::c_schar;
 pub type __u8 = ::std::os::raw::c_uchar;
 pub type __s16 = ::std::os::raw::c_short;
